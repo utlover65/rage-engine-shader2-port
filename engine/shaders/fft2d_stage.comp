@@ -1,0 +1,26 @@
+#version 450
+// One Stockham radix-2 stage applied to every line of an N x N grid. mode 0 transforms rows (x), stride 1;
+// mode 1 transforms columns (z), stride N. Dispatch (N / 2 / 32, N, 1). The 2-D FFT is 6 row passes then
+// 6 column passes for N = 64.
+layout(local_size_x = 32) in;
+layout(std430, set = 0, binding = 23) readonly buffer Src { vec2 src[]; };
+layout(std430, set = 0, binding = 24) writeonly buffer Dst { vec2 dst[]; };
+layout(push_constant) uniform Push { uint Ns; uint N; uint mode; } pc;
+
+vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
+
+void main() {
+    uint j = gl_GlobalInvocationID.x;
+    if (j >= pc.N / 2u) return;
+    uint line = gl_WorkGroupID.y;
+    uint base = (pc.mode == 0u) ? line * pc.N : line;
+    uint stride = (pc.mode == 0u) ? 1u : pc.N;
+    uint k = j & (pc.Ns - 1u);
+    vec2 a = src[base + j * stride];
+    vec2 b = src[base + (j + pc.N / 2u) * stride];
+    float ang = -3.14159265358979 * float(k) / float(pc.Ns);
+    vec2 bw = cmul(b, vec2(cos(ang), sin(ang)));
+    uint i0 = ((j - k) << 1u) + k;
+    dst[base + i0 * stride] = a + bw;
+    dst[base + (i0 + pc.Ns) * stride] = a - bw;
+}

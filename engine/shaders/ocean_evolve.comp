@@ -1,0 +1,36 @@
+#version 450
+// Tessendorf height and displacement spectra at time t. Writes conj(v) for each wave vector so that the
+// forward FFT of the grid, followed by taking the real part, gives sum_k v e^{i k.x} (the inverse transform).
+// mode 0: height v = h(k,t). mode 1: v = -i (kx/|k|) h. mode 2: v = -i (kz/|k|) h.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(std430, set = 0, binding = 23) readonly buffer H0 { vec2 h0[]; };
+layout(std430, set = 0, binding = 24) writeonly buffer Out { vec2 spec[]; };
+layout(push_constant) uniform P { float t; float L; float g; uint N; uint mode; } pc;
+
+vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
+
+void main() {
+    uint N = pc.N;
+    uint nx = gl_GlobalInvocationID.x, nz = gl_GlobalInvocationID.y;
+    if (nx >= N || nz >= N) return;
+    float sx = nx < N / 2u ? float(nx) : float(nx) - float(N);
+    float sz = nz < N / 2u ? float(nz) : float(nz) - float(N);
+    float kx = 6.28318530718 * sx / pc.L;
+    float kz = 6.28318530718 * sz / pc.L;
+    float k = length(vec2(kx, kz));
+
+    uint ox = (N - nx) % N, oz = (N - nz) % N;
+    vec2 h = h0[nz * N + nx];
+    vec2 hm = h0[oz * N + ox];                  // h0(-k)
+    float w = sqrt(pc.g * k);
+    vec2 e = vec2(cos(w * pc.t), sin(w * pc.t));
+    // h(k,t) = h0(k) e^{iwt} + conj(h0(-k)) e^{-iwt}
+    vec2 hk = cmul(h, e) + cmul(vec2(hm.x, -hm.y), vec2(e.x, -e.y));
+
+    vec2 v = hk;
+    if (pc.mode != 0u) {
+        float d = (k < 1e-6) ? 0.0 : ((pc.mode == 1u) ? kx : kz) / k;
+        v = vec2(hk.y * d, -hk.x * d);          // -i d hk
+    }
+    spec[nz * N + nx] = vec2(v.x, -v.y);        // conj: forward FFT + real part = inverse sum
+}

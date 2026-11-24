@@ -1,0 +1,22 @@
+#version 450
+// One Stockham radix-2 stage of a 1-D complex FFT (Bainville's formulation). Dispatch N/2 threads.
+// Ns = 1, 2, 4, ..., N/2 across the log2(N) passes; the output of each pass is the next pass's input.
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 23) readonly buffer Src { vec2 src[]; };
+layout(std430, set = 0, binding = 24) writeonly buffer Dst { vec2 dst[]; };
+layout(push_constant) uniform Push { uint Ns; uint N; } pc;
+
+vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
+
+void main() {
+    uint j = gl_GlobalInvocationID.x;
+    if (j >= pc.N / 2u) return;
+    uint k = j & (pc.Ns - 1u);
+    vec2 a = src[j];
+    vec2 b = src[j + pc.N / 2u];
+    float ang = -3.14159265358979 * float(k) / float(pc.Ns);
+    vec2 bw = cmul(b, vec2(cos(ang), sin(ang)));
+    uint i0 = ((j - k) << 1u) + k;
+    dst[i0] = a + bw;
+    dst[i0 + pc.Ns] = a - bw;
+}
