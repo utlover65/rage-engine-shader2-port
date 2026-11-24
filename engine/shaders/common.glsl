@@ -22,6 +22,10 @@ layout(std140, set = 0, binding = 0) uniform FrameData {
     mat4 uSunFarViewProj;  // clip from world for the far sun cascade (+-500 m)
     mat4 uPrevViewProj;    // last frame's unjittered clip from world (TAA reprojection)
     vec4 uTaa;             // z = 1 when the TAA history holds a previous frame
+    vec4 uDof;             // adaptive depth-of-field: x = focal length (mm), y = f-number,
+                           // z = focus distance (m), w = sensor height (mm)
+    vec4 uWeather;         // weather/wetness: x = rain intensity (0..1), y = wetness factor (0..1),
+                           // z = flood level (metres above shore), w = foam intensity (0..1)
 } uF;
 
 // Textures in the fixed descriptor layout (see rhi.h). Each pass reads only what it declares.
@@ -348,7 +352,11 @@ float cascadeVisibility(sampler2D sm, vec2 uv, float ndcZ, vec3 p, float halfWor
     float lit = 0.0;
     for (int i = 0; i < 12; i++) {
         float s = texture(sm, uv + rot * poisson[i] * texel * sunRadiusTexels).r;
-        lit += (s <= occ + SHADOW_DEPTH_BIAS) ? 1.0 : 0.0;
+        // Contact hardening: soften the shadow boundary by biasing the occlusion test
+        // toward the surface normal. A surface facing the sun receives less shadow.
+        float nDotL = max(dot(normalize(p.xyz), normalize(uF.uSunDir.xyz)), 0.0);
+        float contact = smoothstep(0.0, 0.5, 1.0 - nDotL);
+        lit += (s <= occ + SHADOW_DEPTH_BIAS * contact) ? 1.0 : 0.0;
     }
     return lit / 12.0;
 }
@@ -498,3 +506,4 @@ vec3 skyRadiance(float r0, vec3 d) {
     return scatterAlong(r0, d, tTop, Tv);
 }
 
+// weather uniform added

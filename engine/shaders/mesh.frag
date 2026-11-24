@@ -329,6 +329,69 @@ void evaluateMaterial(out vec3 albedo, out float roughness, out float metallic, 
         albedo *= 1.0 - coastalWet * 0.12;
     }
 
+    // --- Weather-dependent wetness, rain, and submersion effects ---
+    float rain = uF.uWeather.x;
+    float wet = uF.uWeather.y;
+    float flood = uF.uWeather.z;
+
+    // Water submersion: when the surface is below flood level, darken and desaturate
+    float submerged = step(flood, p.y) * smoothstep(-10.0, 0.0, p.y - flood);
+    float submix = max(0.0, min(1.0, submerged));
+    // Darken submerged surfaces (decrease albedo, increase darkness)
+    albedo *= 1.0 - submix * 0.35;
+    // Reduce roughness when submerged (darker, "deeper" water look)
+    roughness = mix(roughness, max(0.1, roughness * 0.6), submix * 0.5);
+
+    // Rain streaks on vertical/near-vertical faces: apply only when raining
+    float rainStreaks = 0.0;
+    if (rain > 0.01) {
+        // Rain direction is roughly -y (downwards); project onto vertical faces
+        float verticality = abs(dot(normalize(vNormal), vec3(0.0, 1.0, 0.0)));
+        if (verticality > 0.3) {
+            rainStreaks = rain * 0.5 * (1.0 - verticality); // more streaks on vertical faces
+            // Slightly darken where rain streaks hit
+            albedo *= 1.0 - rainStreaks * 0.15;
+            // Increase roughness slightly where rain hits
+            roughness = mix(roughness, roughness + 0.03 * rainStreaks, 0.5);
+        }
+    }
+
+    // Wet surface response: when wet, surfaces get darker and more reflective
+    // Wetness factor y in uWeather controls the overall wetness level
+    if (wet > 0.01) {
+        // Wet areas darken (decrease albedo) and get a slight blue tint
+        vec3 wetTint = vec3(0.95, 0.97, 1.0) * wet * 0.15;
+        albedo = mix(albedo, albedo * wetTint, 0.3);
+        // Wet surfaces have lower roughness (smoother, more mirror-like)
+        roughness = mix(roughness, max(0.05, roughness * 0.7), wet * 0.4);
+        // Add a slight sheen/gloss to simulate the oil film on water
+        // This is handled in the BRDF, not directly in albedo/roughness
+    }
+
+    // Terrain material blending based on moisture: sand becomes darker/glossier near water,
+    // rock develops algae/moss growth
+    if (kind == 7 || kind == 6) {  // sand or rock
+        // Flood level affects how much of the material is "underwater"
+        float floodFactor = smoothstep(flood - 2.0, flood, p.y);
+        // Decrease albedo and increase darkness underwater
+        albedo *= 1.0 - floodFactor * 0.25;
+        // Wet sand/rock gets slightly smoother (lower roughness)
+        roughness = mix(roughness, max(0.05, roughness - 0.05 * floodFactor), 0.3);
+        // Sand develops moisture-dependent micro-sparkle when wet
+        if (kind == 7 && wet > 0.01) {
+            float moistureSparkle = smoothstep(0.0, 0.3, wet) * smoothstep(0.0, 0.5, floodFactor);
+            albedo *= 1.0 + vec3(0.02, 0.01, 0.0) * moistureSparkle;  // golden sparkle
+            roughness = mix(roughness, max(0.02, roughness - 0.02 * moistureSparkle), 0.4);
+        }
+        // Rock develops algae/moss growth in damp shaded areas
+        if (kind == 6 && wet > 0.01) {
+            float algae = smoothstep(0.4, 0.8, noise3(p * 3.0)) * smoothstep(0.0, 0.6, floodFactor);
+            vec3 algaeTint = vec3(0.2, 0.35, 0.15) * algae;
+            albedo = mix(albedo, albedo * algaeTint, 0.3);
+            roughness = mix(roughness, roughness + 0.02 * algae, 0.3);
+        }
+    }
+
     // Sub-pixel material breakup: real surfaces do not have one perfectly uniform roughness.
     // Keep the amplitude low enough to avoid noisy highlights at mobile resolutions.
     float micro = noise3(p * 46.0);

@@ -92,9 +92,11 @@ private:
     std::unique_ptr<rhi::Shader> fullscreenVs_, oceanVs_;
     std::unique_ptr<rhi::Shader> transFs_, msFs_, skyViewFs_, cloudFs_, cloudShadowFs_, skyFs_, oceanFs_;
     std::unique_ptr<rhi::Shader> brightFs_, blurFs_, toneFs_, shaftFs_;
+    std::unique_ptr<rhi::Shader> dofPrepareFs_, dofBlurFs_, dofCompositeFs_, lumDownsampleFs_, lumReduceFs_;
     std::unique_ptr<rhi::Shader> meshVs_, meshFs_, shadowVs_, shadowFs_;
     std::unique_ptr<rhi::Pipeline> transPipe_, msPipe_, skyViewPipe_, cloudPipe_, cloudShadowPipe_, skyPipe_, oceanPipe_;
     std::unique_ptr<rhi::Pipeline> brightPipe_, blurPipe_, tonePipe_, shaftPipe_, prefilterPipe_;
+    std::unique_ptr<rhi::Pipeline> dofPreparePipe_, dofBlurPipe_, dofCompositePipe_, lumDownsamplePipe_, lumReducePipe_;
     std::unique_ptr<rhi::Shader> prefilterFs_, aerialFs_;
     std::unique_ptr<rhi::Pipeline> aerialPipe_;
     std::unique_ptr<rhi::Shader> depthFs_, gtaoFs_, aoBlurFs_, taaFs_, copyFs_;
@@ -105,6 +107,7 @@ private:
     // Descriptor sets, one per pass (each pass reads a fixed set of images).
     std::unique_ptr<rhi::DescriptorSet> dTrans_, dMs_, dSkyView_, dCloud_, dCloudShadow_, dSky_, dOcean_;
     std::unique_ptr<rhi::DescriptorSet> dBright_, dBlurH_, dBlurV_, dTone_, dMesh_, dMeshRefl_, dShadow_, dShaft_, dPrefilter_, dAerial_, dShadowNear_, dShadowFar_, dDepthPre_, dGtao_, dAoBlur_, dTaa_, dCopy_;
+    std::unique_ptr<rhi::DescriptorSet> dDofPrepare_, dDofBlurH_, dDofBlurV_, dDofComposite_, dLumDownsample_, dLumReduce_;
 
     // Scanned materials (wood and rock diffuse, with derived normal and height maps).
     std::unique_ptr<rhi::Image> woodAlbedo_, woodNormal_, rockAlbedo_, rockNormal_;
@@ -122,6 +125,8 @@ private:
     rg::Handle hTrans_ = 0, hMs_ = 0, hSky_ = 0, hCloud_ = 0, hCloudShadow_ = 0;
     rg::Handle hHdr_ = 0, hDepth_ = 0, hLdr_ = 0;
     rg::Handle hBloomA_ = 0, hBloomB_ = 0;
+    rg::Handle hDofPrep_ = 0, hDofH_ = 0, hDofV_ = 0, hDofOut_ = 0;  // adaptive DOF chain
+    rg::Handle hLumA_ = 0, hLumB_ = 0;  // auto-exposure luminance reduction
     rg::Handle hShadow_ = 0, hShadowDepth_ = 0;
     rg::Handle hShaft_ = 0;  // god rays, quarter resolution
     rg::Handle hPre_ = 0;    // prefiltered sky: three stacked rows of the sky-view LUT
@@ -148,6 +153,14 @@ private:
     bool capOn_ = true;          // ENGINE_SEA_CAP=0 turns the capillary cascade off (the Pass 33 sea)
     bool profile_ = false;
     std::vector<std::pair<std::string, double>> passMs_;
+    // Auto-exposure: smoothed gain applied in the tone map (uExposure.w). 1.0 when disabled.
+    bool autoExposureOn_ = true;
+    float autoExposure_ = 1.0f;
+    // Adaptive DOF lens parameters (focal length mm, f-number, focus distance m, sensor height mm).
+    float dofFocalMm_ = 35.0f;
+    float dofAperture_ = 2.8f;
+    float dofFocusM_ = 80.0f;
+    float dofSensorH_ = 24.0f;
     bool cloudLayersOn_ = true;  // ENGINE_CLOUD_LAYERS=0 turns the stratus and altostratus sun shadows off
 
     std::unique_ptr<rhi::CommandList> cmd_;

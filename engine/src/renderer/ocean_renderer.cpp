@@ -40,6 +40,8 @@ struct alignas(16) OceanRenderer::FrameData {
     float sunFarViewProj[16];
     float prevViewProj[16];
     float taa[4];
+    float dof[4];  // focal length (mm), f-number, focus distance (m), sensor height (mm)
+    float uWeather[4];  // weather: x=rain, y=wetness, z=flood, w=foam
 };
 
 namespace {
@@ -118,6 +120,11 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     brightFs_ = dev_.createShader(shaderDir + "/bloom_bright.frag.spv");
     blurFs_ = dev_.createShader(shaderDir + "/bloom_blur.frag.spv");
     toneFs_ = dev_.createShader(shaderDir + "/tonemap.frag.spv");
+    dofPrepareFs_ = dev_.createShader(shaderDir + "/dof_prepare.frag.spv");
+    dofBlurFs_ = dev_.createShader(shaderDir + "/dof_blur.frag.spv");
+    dofCompositeFs_ = dev_.createShader(shaderDir + "/dof_composite.frag.spv");
+    lumDownsampleFs_ = dev_.createShader(shaderDir + "/exposure_downsample.frag.spv");
+    lumReduceFs_ = dev_.createShader(shaderDir + "/exposure_reduce.frag.spv");
     meshVs_ = dev_.createShader(shaderDir + "/mesh.vert.spv");
     meshFs_ = dev_.createShader(shaderDir + "/mesh.frag.spv");
     shadowVs_ = dev_.createShader(shaderDir + "/mesh_shadow.vert.spv");
@@ -149,6 +156,11 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     brightPipe_ = fullscreenPipe("bloom bright", *brightFs_, rhi::Format::RGBA16_FLOAT);
     blurPipe_ = fullscreenPipe("bloom blur", *blurFs_, rhi::Format::RGBA16_FLOAT);
     tonePipe_ = fullscreenPipe("tone map", *toneFs_, rhi::Format::RGBA8_UNORM);
+    dofPreparePipe_ = fullscreenPipe("DOF prepare", *dofPrepareFs_, rhi::Format::RGBA16_FLOAT);
+    dofBlurPipe_ = fullscreenPipe("DOF blur", *dofBlurFs_, rhi::Format::RGBA16_FLOAT);
+    dofCompositePipe_ = fullscreenPipe("DOF composite", *dofCompositeFs_, rhi::Format::RGBA16_FLOAT);
+    lumDownsamplePipe_ = fullscreenPipe("exposure downsample", *lumDownsampleFs_, rhi::Format::R32_FLOAT);
+    lumReducePipe_ = fullscreenPipe("exposure reduce", *lumReduceFs_, rhi::Format::R32_FLOAT);
     {
         rhi::ComputePipelineDesc d;
         d.name = "ocean evolve";
@@ -273,6 +285,15 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     hBloomA_ = graph_.create(dev_, {halfW, halfH, rhi::Format::RGBA16_FLOAT, true, false, true, true, "bloom A (half res)"});
     hBloomB_ = graph_.create(dev_, {halfW, halfH, rhi::Format::RGBA16_FLOAT, true, false, true, true, "bloom B (half res)"});
     hLdr_ = graph_.create(dev_, {W, H, rhi::Format::RGBA8_UNORM, true, false, false, true, "display"});
+    // Adaptive depth-of-field chain (full resolution HDR): prepared (colour + CoC), horizontal and
+    // vertical bokeh blur, and the final composite.
+    hDofPrep_ = graph_.create(dev_, {W, H, rhi::Format::RGBA16_FLOAT, true, false, true, true, "DOF prepared"});
+    hDofH_ = graph_.create(dev_, {W, H, rhi::Format::RGBA16_FLOAT, true, false, true, true, "DOF blur H"});
+    hDofV_ = graph_.create(dev_, {W, H, rhi::Format::RGBA16_FLOAT, true, false, true, true, "DOF blur V"});
+    hDofOut_ = graph_.create(dev_, {W, H, rhi::Format::RGBA16_FLOAT, true, false, true, true, "DOF composite"});
+    // Auto-exposure luminance reduction: an 8x8 grid, then a single final value.
+    hLumA_ = graph_.create(dev_, {8, 8, rhi::Format::R32_FLOAT, true, false, true, true, "luminance grid"});
+    hLumB_ = graph_.create(dev_, {1, 1, rhi::Format::R32_FLOAT, true, false, true, true, "luminance average"});
 
     // Buffers: frame uniforms (main and mirrored camera), the ocean mesh, scene objects, headland.
     ubo_ = dev_.createBuffer(sizeof(FrameData), rhi::BufferUsage::Uniform);
@@ -288,6 +309,9 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     capOn_ = envFlag("ENGINE_SEA_CAP", true);
     cloudLayersOn_ = envFlag("ENGINE_CLOUD_LAYERS", true);
     profile_ = envFlag("ENGINE_PROFILE", false);
+    autoExposureOn_ = envFlag("ENGINE_AUTO_EXPOSURE", true);
+    if (const char* v = std::getenv("ENGINE_DOF_FOCUS"); v && *v) dofFocusM_ = std::atof(v);
+    if (const char* v = std::getenv("ENGINE_DOF_APERTURE"); v && *v) dofAperture_ = std::atof(v);
     graph_.setProfiling(profile_);
     // FFT ocean buffers: the initial spectrum h0 (built once, on the CPU), three evolved spectra and a ping buffer.
     {
@@ -355,6 +379,11 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     rhi::Image& resolved = graph_.image(hResolved_);
     rhi::Image& hist = graph_.image(hHist_);
     rhi::Image& aerialT = graph_.image(hAerialT_);
+    rhi::Image& dofPrep = graph_.image(hDofPrep_);
+    rhi::Image& dofH = graph_.image(hDofH_);
+    rhi::Image& dofV = graph_.image(hDofV_);
+    rhi::Image& dofOut = graph_.image(hDofOut_);
+    rhi::Image& lumA = graph_.image(hLumA_);
     // Scene objects, as drawn in the main view and in the mirrored reflection view.
     const TexSet meshTex = bindings({{1, &trans}, {2, &sky}, {3, &cloud}, {5, &ms}, {7, &shadow},
                                      {9, &cloudShadow}, {8, woodAlbedo_.get()}, {10, woodNormal_.get()},
@@ -408,10 +437,18 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     dMesh_ = makeSet(ubo_.get(), meshTex);
     dMeshRefl_ = makeSet(uboRefl_.get(), meshTex);
     dShadow_ = makeSet(ubo_.get(), bindings({}));
-    dBright_ = makeSet(ubo_.get(), bindings({{4, &resolved}}));
+    dBright_ = makeSet(ubo_.get(), bindings({{4, &dofOut}}));
     dBlurH_ = makeSet(ubo_.get(), bindings({{4, &bloomA}}));
     dBlurV_ = makeSet(ubo_.get(), bindings({{4, &bloomB}}));
-    dTone_ = makeSet(ubo_.get(), bindings({{4, &resolved}, {6, &bloomA}}));
+    dTone_ = makeSet(ubo_.get(), bindings({{4, &dofOut}, {6, &bloomA}}));
+    // Adaptive DOF and auto-exposure sets. These passes reuse the fixed sampler slots; each pass
+    // binds only the images it reads (slot 4 = "source", slot 6 = "second source" in these passes).
+    dDofPrepare_ = makeSet(ubo_.get(), bindings({{4, &resolved}, {20, &linDepth}}));
+    dDofBlurH_ = makeSet(ubo_.get(), bindings({{4, &dofPrep}}));
+    dDofBlurV_ = makeSet(ubo_.get(), bindings({{4, &dofH}}));
+    dDofComposite_ = makeSet(ubo_.get(), bindings({{4, &dofPrep}, {6, &dofV}}));
+    dLumDownsample_ = makeSet(ubo_.get(), bindings({{4, &resolved}}));
+    dLumReduce_ = makeSet(ubo_.get(), bindings({{4, &lumA}}));
 
     // Passes, in the order they run.
     graph_.addPass("transmittance LUT")
@@ -590,8 +627,38 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
         .read(hResolved_)
         .colorTarget(hHist_, rhi::LoadOp::Clear)
         .execute([this](rhi::CommandList& c) { drawFullscreen(c, *copyPipe_, *dCopy_, graph_.image(hHist_)); });
-    graph_.addPass("bloom bright")
+    // Adaptive depth-of-field (ported from the RAGE adaptiveDof bank): prepare colour + circle of
+    // confusion, a separable bokeh blur, then a CoC-weighted composite.
+    graph_.addPass("DOF prepare")
         .read(hResolved_)
+        .read(hLinDepth_)
+        .colorTarget(hDofPrep_, rhi::LoadOp::Clear)
+        .execute([this](rhi::CommandList& c) { drawFullscreen(c, *dofPreparePipe_, *dDofPrepare_, graph_.image(hDofPrep_)); });
+    graph_.addPass("DOF blur horizontal")
+        .read(hDofPrep_)
+        .colorTarget(hDofH_, rhi::LoadOp::Clear)
+        .execute([this](rhi::CommandList& c) { drawFullscreen(c, *dofBlurPipe_, *dDofBlurH_, graph_.image(hDofH_), 0.0f); });
+    graph_.addPass("DOF blur vertical")
+        .read(hDofH_)
+        .colorTarget(hDofV_, rhi::LoadOp::Clear)
+        .execute([this](rhi::CommandList& c) { drawFullscreen(c, *dofBlurPipe_, *dDofBlurV_, graph_.image(hDofV_), 1.0f); });
+    graph_.addPass("DOF composite")
+        .read(hDofPrep_)
+        .read(hDofV_)
+        .colorTarget(hDofOut_, rhi::LoadOp::Clear)
+        .execute([this](rhi::CommandList& c) { drawFullscreen(c, *dofCompositePipe_, *dDofComposite_, graph_.image(hDofOut_)); });
+    // Auto-exposure (ported from the RAGE exposureGPU / avgLuminanceCompute bank): reduce the
+    // resolved HDR to a luminance grid, then to a single value read back on the host.
+    graph_.addPass("exposure downsample")
+        .read(hResolved_)
+        .colorTarget(hLumA_, rhi::LoadOp::Clear)
+        .execute([this](rhi::CommandList& c) { drawFullscreen(c, *lumDownsamplePipe_, *dLumDownsample_, graph_.image(hLumA_)); });
+    graph_.addPass("exposure reduce")
+        .read(hLumA_)
+        .colorTarget(hLumB_, rhi::LoadOp::Clear)
+        .execute([this](rhi::CommandList& c) { drawFullscreen(c, *lumReducePipe_, *dLumReduce_, graph_.image(hLumB_)); });
+    graph_.addPass("bloom bright")
+        .read(hDofOut_)
         .colorTarget(hBloomA_, rhi::LoadOp::Clear)
         .execute([this](rhi::CommandList& c) { drawFullscreen(c, *brightPipe_, *dBright_, graph_.image(hBloomA_)); });
     graph_.addPass("bloom blur horizontal")
@@ -733,7 +800,19 @@ void OceanRenderer::renderFrame(double timeSeconds) {
     const double cellAngle = 2.0 * M_PI / scene::kOceanSegments;
     fd.exposure[1] = toF(std::max(pixelAngle, cellAngle));
     fd.exposure[2] = cloudLayersOn_ ? 1.0f : 0.0f;  // read by cloudShadowTransmittance in common.glsl
+    fd.exposure[3] = autoExposure_;  // auto-exposure gain, read by tonemap.frag
     fd.time[0] = toF(timeSeconds);
+    // Adaptive DOF lens parameters (see dof_prepare.frag).
+    fd.dof[0] = dofFocalMm_;
+    fd.dof[1] = dofAperture_;
+    fd.dof[2] = dofFocusM_;
+    fd.dof[3] = dofSensorH_;
+    // Weather: rain intensity (0..1), wetness factor (0..1), flood level (metres above shore), foam intensity (0..1)
+    // uWeather is a vec4 member of FrameData (common.glsl); indices x/y/z/w map to rain/wetness/flood/foam
+    fd.uWeather[0] = 0.0f;  // rain intensity
+    fd.uWeather[1] = 0.0f;  // wetness factor
+    fd.uWeather[2] = 0.0f;  // flood level
+    fd.uWeather[3] = 0.0f;  // foam intensity
     // Probe grid (dims 0 before the bake, which makes the shaders fall back to the sky).
     for (int i = 0; i < 3; i++) {
         fd.probeOrigin[i] = probes_.origin[i];
@@ -772,6 +851,17 @@ void OceanRenderer::renderFrame(double timeSeconds) {
     graph_.execute(*cmd_);
     cmd_->end();
     dev_.submitAndWait(*cmd_);
+    // Auto-exposure: read back the single average-luminance texel and adapt the gain for next
+    // frame (one frame of latency, standard for exposure adaptation).
+    if (autoExposureOn_) {
+        const auto lumBytes = readImage(graph_.image(hLumB_), 4);
+        float avgLum;
+        std::memcpy(&avgLum, lumBytes.data(), 4);
+        if (std::isfinite(avgLum) && avgLum > 0.0f) {
+            const float targetGain = std::clamp(0.18f / avgLum, 0.25f, 8.0f);
+            autoExposure_ += (targetGain - autoExposure_) * 0.15f;
+        }
+    }
     if (profile_ && dev_.timestampsSupported()) {
         const auto names = graph_.passNames();
         const auto ticks = dev_.readTimestamps(static_cast<uint32_t>(2 * names.size()));

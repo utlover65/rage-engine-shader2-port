@@ -24,6 +24,7 @@ float hash12(vec2 p) {
 vec3 mappedAt(vec2 uv) {
     vec3 hdr = max(texture(uHdrTex, uv).rgb, vec3(0.0));
     hdr += BLOOM_STRENGTH * max(texture(uBloomTex, uv).rgb, vec3(0.0));
+    hdr *= uF.uExposure.w;  // auto-exposure gain (1.0 when disabled)
     vec3 mapped = acesFit(hdr);
     // Sunset grade: a violet lift in the shadows and a magenta push in the highlights, the colour
     // cast of low sun through the haze over the bay. Applied after the curve so it does not change

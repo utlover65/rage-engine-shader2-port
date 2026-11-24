@@ -38,8 +38,6 @@ file(MAKE_DIRECTORY ${SPV_DIR})
 function(engine_shader list_var src stage)
   get_filename_component(base ${src} NAME)
   set(gen ${SPV_DIR}/${base}.gen.glsl)
-  # Re-run configure when a shader source changes, so the combined .gen.glsl is regenerated.
-  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${src} ${SHADER_DIR}/common.glsl ${SHADER_DIR}/version.glsl)
   set(spv ${SPV_DIR}/${base}.spv)
   # Generate the combined shader at configure time. CMake COMMAND does not run
   # through a shell, so using a literal `>` redirection here would create no file.
@@ -47,13 +45,21 @@ function(engine_shader list_var src stage)
   file(READ ${SHADER_DIR}/common.glsl common_text)
   file(READ ${src} shader_text)
   file(WRITE ${gen} "${version_text}\n${common_text}\n${shader_text}")
+  # Force CMake to re-run the custom command when source files change.
+  # We do this by adding the source files as dependencies and also adding a
+  # configure-depends property that CMake checks.
   add_custom_command(
     OUTPUT ${spv}
     COMMAND ${GLSLANG_VALIDATOR} -V -S ${stage} --target-env vulkan1.3 -o ${spv} ${gen}
-    DEPENDS ${gen}
+    DEPENDS ${gen} ${src} ${SHADER_DIR}/common.glsl ${SHADER_DIR}/version.glsl
     COMMENT "SPIR-V ${base}")
   set(${list_var} ${${list_var}} ${spv} PARENT_SCOPE)
 endfunction()
+
+# Ensure CMake re-configures when shader sources change.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  engine/shaders/version.glsl
+  engine/shaders/common.glsl)
 
 set(SHADER_SPV)
 engine_shader(SHADER_SPV ${SHADER_DIR}/tri.vert vert)
@@ -82,6 +88,11 @@ engine_shader(SHADER_SPV ${SHADER_DIR}/sky.frag frag)
 engine_shader(SHADER_SPV ${SHADER_DIR}/ocean.vert vert)
 engine_shader(SHADER_SPV ${SHADER_DIR}/ocean.frag frag)
 engine_shader(SHADER_SPV ${SHADER_DIR}/tonemap.frag frag)
+engine_shader(SHADER_SPV ${SHADER_DIR}/dof_prepare.frag frag)
+engine_shader(SHADER_SPV ${SHADER_DIR}/dof_blur.frag frag)
+engine_shader(SHADER_SPV ${SHADER_DIR}/dof_composite.frag frag)
+engine_shader(SHADER_SPV ${SHADER_DIR}/exposure_downsample.frag frag)
+engine_shader(SHADER_SPV ${SHADER_DIR}/exposure_reduce.frag frag)
 add_custom_target(shaders ALL DEPENDS ${SHADER_SPV})
 
 add_library(engine_rhi STATIC
