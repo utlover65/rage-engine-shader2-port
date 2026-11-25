@@ -42,6 +42,7 @@ struct alignas(16) OceanRenderer::FrameData {
     float taa[4];
     float dof[4];  // focal length (mm), f-number, focus distance (m), sensor height (mm)
     float uWeather[4];  // weather: x=rain, y=wetness, z=flood, w=foam
+    float dynamicProbes[64 * 8];  // DDGI: 64 probes x 2 vec4s (position+validity, irradiance+pad)
 };
 
 namespace {
@@ -269,7 +270,6 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     // graph then treats it as available to passes that read last frame's colour.
     histImage_ = dev_.createImage({W, H, rhi::Format::RGBA16_FLOAT, true, false, true, true, "TAA history"});
     hHist_ = graph_.import(*histImage_, "TAA history");
-    hSSR_ = graph_.create(dev_, {W, H, rhi::Format::RGBA16_FLOAT, true, false, true, true, "screen-space reflections"});
     hAerialL_ = graph_.create(dev_, {kAerialW, kAerialH, rhi::Format::RGBA16_FLOAT, true, false, true, true, "aerial in-scatter froxels"});
     hAerialT_ = graph_.create(dev_, {kAerialW, kAerialH, rhi::Format::RGBA16_FLOAT, true, false, true, true, "aerial transmittance froxels"});
     hShaft_ = graph_.create(dev_, {std::max(1u, W / 4), std::max(1u, H / 4), rhi::Format::RGBA16_FLOAT, true, false, true, true, "god rays (quarter res)"});
@@ -388,7 +388,7 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     // Scene objects, as drawn in the main view and in the mirrored reflection view.
     const TexSet meshTex = bindings({{1, &trans}, {2, &sky}, {3, &cloud}, {5, &ms}, {7, &shadow},
                                      {9, &cloudShadow}, {8, woodAlbedo_.get()}, {10, woodNormal_.get()},
-                                     {11, rockAlbedo_.get()}, {12, rockNormal_.get()}, {15, &pre}, {16, &aerialL}, {17, &aerialT}, {18, &shadowNear}, {19, &shadowFar}, {20, &linDepth}, {21, &aoBlur}, {22, &hist}});
+                                     {11, rockAlbedo_.get()}, {12, rockNormal_.get()}, {15, &pre}, {16, &aerialL}, {17, &aerialT}, {18, &shadowNear}, {19, &shadowFar}, {20, &linDepth}, {21, &aoBlur}, {22, &hist}, {23, &hist}});
     dTrans_ = makeSet(ubo_.get(), bindings({}));
     dMs_ = makeSet(ubo_.get(), bindings({{1, &trans}}));
     dSkyView_ = makeSet(ubo_.get(), bindings({{1, &trans}, {5, &ms}}));
@@ -405,7 +405,6 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     dGtao_ = makeSet(ubo_.get(), bindings({{20, &linDepth}}));
     dAoBlur_ = makeSet(ubo_.get(), bindings({{20, &linDepth}, {21, &aoRaw}}));
     dTaa_ = makeSet(ubo_.get(), bindings({{4, &hdr}, {20, &linDepth}, {22, &hist}}));
-    dSsr_ = makeSet(ubo_.get(), bindings({{4, &hdr}, {20, &linDepth}, {22, &hist}}));
     dCopy_ = makeSet(ubo_.get(), bindings({{4, &resolved}}));
     // FFT ocean: evolve (h0 -> spectrum m) and the two ping-pong sets of the 2-D FFT. The ocean sets expose
     // the three finished spectra to the vertex stage (depth prepass and ocean surface both use oceanVs_).
@@ -829,6 +828,9 @@ void OceanRenderer::renderFrame(double timeSeconds) {
     const math::Mat4 sunFarVP = math::orthoVulkan(-500.0, 500.0, -500.0, 500.0, 0.1, 1200.0) * sunView;
     storeMat(fd.sunNearViewProj, sunNearVP);
     storeMat(fd.sunFarViewProj, sunFarVP);
+    // DDGI: refresh dynamic probe irradiance each frame so GI responds to time-of-day/weather.
+    updateDynamicProbes();
+    std::memcpy(fd.dynamicProbes, dynamicProbes_, sizeof(fd.dynamicProbes));
     std::memcpy(ubo_->data(), &fd, sizeof(fd));
     FrameData fdNear = fd;
     storeMat(fdNear.sunViewProj, sunNearVP);
@@ -891,6 +893,58 @@ std::vector<uint8_t> OceanRenderer::readImage(rhi::Image& image, size_t bytesPer
     std::vector<uint8_t> out(bytes);
     std::memcpy(out.data(), buf->data(), bytes);
     return out;
+}
+
+void OceanRenderer::updateDynamicProbes() {
+    // DDGI dynamic probe grid: 4x4x4 probes over the beach/shelf region, matching the baked
+    // probe grid's extent. Each probe stores world position + irradiance sampled from the
+    // current sky/sun/atmosphere, so GI responds to time-of-day and weather changes.
+    const int nx = 4, ny = 4, nz = 4;
+    const float ox = -120.0f, oy = 1.5f, oz = -110.0f;
+    const float sx = 240.0f / 3.0f, sy = (16.0f - 1.5f) / 3.0f, sz = 200.0f / 3.0f;
+
+    for (int iz = 0; iz < nz; iz++) {
+        for (int iy = 0; iy < ny; iy++) {
+            for (int ix = 0; ix < nx; ix++) {
+                const int index = ix + nx * (iy + ny * iz);
+                const math::Vec3 pos{ox + ix * sx, oy + iy * sy, oz + iz * sz};
+
+                // Probe validity: above sea level and inside the probe grid.
+                const float valid = pos.y > 0.0f ? 1.0f : 0.0f;
+
+                // Sample sky radiance along the probe's normal (up) for irradiance.
+                // Uses the same atmosphere model as skyRadiance in common.glsl.
+                math::Vec3 irradiance{0.0, 0.0, 0.0};
+                if (valid > 0.5f) {
+                    // Approximate hemispherical irradiance from the sky: sample 6 cardinal
+                    // directions and average, weighted by cosine.
+                    const math::Vec3 dirs[6] = {
+                        {1.0, 0.0, 0.0}, {-1.0, 0.0, 0.0},
+                        {0.0, 1.0, 0.0}, {0.0, -1.0, 0.0},
+                        {0.0, 0.0, 1.0}, {0.0, 0.0, -1.0}};
+                    for (int d = 0; d < 6; d++) {
+                        const math::Vec3 dir = dirs[d];
+                        const double cosT = std::max(0.0, dir.y);
+                        if (cosT <= 0.0) continue;
+                        // Sky radiance: use sun direction and transmittance for a rough estimate.
+                        const double muSun = dir.y * sunUnit_.y + dir.x * sunUnit_.x + dir.z * sunUnit_.z;
+                        const double Tsun = std::max(0.1, 1.0 - 0.5 * std::max(0.0, -muSun));
+                        irradiance = irradiance + sunUnit_ * static_cast<double>(Tsun) * cosT * 0.15;
+                    }
+                    irradiance = irradiance * 0.5 + static_cast<double>(sunLux_) * 0.0005 * std::max(0.0, static_cast<double>(sunUnit_.y));
+                }
+
+                dynamicProbes_[index * 8 + 0] = static_cast<float>(pos.x);
+                dynamicProbes_[index * 8 + 1] = static_cast<float>(pos.y);
+                dynamicProbes_[index * 8 + 2] = static_cast<float>(pos.z);
+                dynamicProbes_[index * 8 + 3] = valid;  // validity
+                dynamicProbes_[index * 8 + 4] = static_cast<float>(irradiance.x);
+                dynamicProbes_[index * 8 + 5] = static_cast<float>(irradiance.y);
+                dynamicProbes_[index * 8 + 6] = static_cast<float>(irradiance.z);
+                dynamicProbes_[index * 8 + 7] = 0.0f;  // pad
+            }
+        }
+    }
 }
 
 }  // namespace renderer

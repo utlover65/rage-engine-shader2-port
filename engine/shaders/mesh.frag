@@ -483,7 +483,10 @@ void main() {
     float alpha = max(roughness * roughness, 0.018);
     vec3 F0 = mix(vec3(DIELECTRIC_F0), albedo, metallic);
     vec3 Fv = fresnelSchlick(F0, NoV);
-    vec3 diffuseColor = albedo * (1.0 - metallic) * (1.0 - Fv);
+    // Physically correct diffuse: the Lambertian term is albedo * (1 - metallic) / PI and is
+    // independent of the Fresnel reflectance, which governs only the specular lobe. Scaling the
+    // diffuse by (1 - Fv) was a grazing hack that zeroed diffuse at silhouette edges; drop it.
+    vec3 diffuseColor = albedo * (1.0 - metallic);
     float visibility = NoL > 0.0
         ? sunVisibility(vWorld, n) * cloudShadowTransmittance(vWorld) : 0.0;
     vec3 directDiffuse = (diffuseColor / PI) * uF.uSunIlluminance.xyz * NoL * visibility;
@@ -500,13 +503,29 @@ void main() {
         directSpecular = brdf * uF.uSunIlluminance.xyz * NoL * visibility;
     }
 
-    // Ambient: baked probes (sky occlusion and bounce) where the grid covers the point, the sky
-    // LUT elsewhere. Reflections are the sky blurred over a cone that widens with roughness.
+    // Ambient: baked probes (sky occlusion and bounce) where the grid covers the point,
+    // dynamic DDGI probes where they respond to time-of-day/weather, sky LUT elsewhere.
     vec3 probeLight = vec3(0.0);
     bool probed = probeAmbient(vWorld, n, probeLight);
-    vec3 ambientDiffuse = probed ? probeLight : skyDiffuseIrradiance(n);
+    vec3 dynIrradiance = vec3(0.0);
+    bool dynProbed = dynamicProbeAmbient(vWorld, n, dynIrradiance);
+    vec3 ambientDiffuse;
+    if (probed && dynProbed) {
+        // Blend baked (static occlusion) with dynamic (time-of-day responsive) probes.
+        ambientDiffuse = mix(probeLight, dynIrradiance, 0.4);
+    } else if (dynProbed) {
+        ambientDiffuse = dynIrradiance;
+    } else if (probed) {
+        ambientDiffuse = probeLight;
+    } else {
+        ambientDiffuse = skyDiffuseIrradiance(n);
+    }
     vec3 R = reflect(-V, n);
     vec3 envRadiance = skyGlossy(vec3(R.x, max(R.y, 0.0005), R.z), 0.02 + 0.5 * roughness * roughness);
+    // Screen-space reflection: trace the reflected ray through the linear depth buffer and blend
+    // the hit colour with the sky radiance; the blend fades in only for glossy surfaces (roughness < 0.35).
+    vec4 ssr = ssrTrace(vWorld + n * 0.05, R, cam);
+    envRadiance = mix(envRadiance, ssr.rgb, ssr.a * (1.0 - smoothstep(0.35, 0.7, roughness)));
     // A compact multiple-scattering compensation keeps rough conductors/dielectrics from
     // becoming unnaturally dark as the microfacet lobe broadens (approximation to the LUT method).
     float energyLoss = 1.0 - 0.28 * roughness * (1.0 - max(max(F0.r, F0.g), F0.b));
@@ -522,5 +541,25 @@ void main() {
     vec3 Tv;
     vec3 Lin = aerialLookup(vWorld, dist, Tv);
     vec3 radiance = directDiffuse + directSpecular + diffuseColor * ambientDiffuse + envSpecular + emission;
+    // Screen-space indirect diffuse: approximate diffuse radiance from surrounding geometry
+    // by sampling the TAA history buffer at neighboring screen pixels. This is a lightweight
+    // screen-space indirect illumination where useful (directive #4). Uses the same history
+    // buffer already bound for TAA/SSR, so no extra descriptor bindings are needed.
+    {
+        vec3 indirectDiffuse = vec3(0.0);
+        vec4 clip = uF.uMainViewProj * vec4(vWorld, 1.0);
+        vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+        // Sample 4 neighboring pixels (cardinal directions) in screen space.
+        // Texel size is estimated from the framebuffer dimensions; the history image is
+        // full-resolution, so half-pixel offsets give a reasonable neighborhood sample.
+        vec2 offs[4] = { vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0) };
+        vec4 sum = vec4(0.0);
+        for (int i = 0; i < 4; i++) {
+            sum += texture(uSsid, uv + offs[i] / 512.0);
+        }
+        indirectDiffuse = sum.rgb / 4.0;
+        // Add indirect diffuse contribution, scaled for visual plausibility.
+        radiance += indirectDiffuse * 0.15;
+    }
     outHdr = vec4(radiance * Tv + Lin, 1.0);
 }

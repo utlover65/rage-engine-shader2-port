@@ -26,6 +26,7 @@ layout(std140, set = 0, binding = 0) uniform FrameData {
                            // z = focus distance (m), w = sensor height (mm)
     vec4 uWeather;         // weather/wetness: x = rain intensity (0..1), y = wetness factor (0..1),
                            // z = flood level (metres above shore), w = foam intensity (0..1)
+    float uDynamicProbes[64 * 8];  // DDGI: 64 probes x 2 vec4s (position+validity, irradiance+pad)
 } uF;
 
 // Textures in the fixed descriptor layout (see rhi.h). Each pass reads only what it declares.
@@ -51,6 +52,7 @@ layout(set = 0, binding = 19) uniform sampler2D uShadowFar;       // far sun cas
 layout(set = 0, binding = 20) uniform sampler2D uLinDepth;        // linear depth from the prepass (metres)
 layout(set = 0, binding = 21) uniform sampler2D uAO;              // ambient occlusion (see gtao.frag, ao_blur.frag)
 layout(set = 0, binding = 22) uniform sampler2D uHistory;        // TAA history: last frame's resolved HDR
+    layout(set = 0, binding = 23) uniform sampler2D uSsid;            // Screen-space indirect diffuse: sampled from uHistory for SSID
 
 // Per-pass constant: the size (w, h) of the target being rendered, in pixels.
 layout(push_constant) uniform PassPush {
@@ -504,6 +506,52 @@ vec3 skyRadiance(float r0, vec3 d) {
     }
     float tTop = sphereRoot(r0, d.y, RT, true);
     return scatterAlong(r0, d, tTop, Tv);
+}
+
+// DDGI dynamic probe sampling: trilinear between the 8 surrounding probes in the dynamic
+// probe grid. Each probe stores position (xyz, w=validity) and irradiance (rgb, w=pad).
+// Returns irradiance and validity; callers blend with baked probes based on distance.
+bool dynamicProbeAmbient(vec3 p, vec3 n, out vec3 irradiance) {
+    const int nx = 4, ny = 4, nz = 4;
+    const vec3 origin = vec3(-120.0, 1.5, -110.0);
+    const vec3 step = vec3(240.0 / 3.0, (16.0 - 1.5) / 3.0, 200.0 / 3.0);
+    vec3 f = (p - origin) / step;
+    if (any(lessThan(f, vec3(0.0))) || any(greaterThan(f, vec3(3.0)))) {
+        irradiance = vec3(0.0);
+        return false;
+    }
+    f = min(f, vec3(2.999));
+    ivec3 i0 = ivec3(floor(f));
+    vec3 t = f - vec3(i0);
+    irradiance = vec3(0.0);
+    float wsum = 0.0;
+    for (int cz = 0; cz <= 1; cz++) {
+        for (int cy = 0; cy <= 1; cy++) {
+            for (int cx = 0; cx <= 1; cx++) {
+                ivec3 o = ivec3(cx, cy, cz);
+                float w = ((o.x == 1) ? t.x : 1.0 - t.x) *
+                          ((o.y == 1) ? t.y : 1.0 - t.y) *
+                          ((o.z == 1) ? t.z : 1.0 - t.z);
+                int idx = (i0.x + o.x) + nx * ((i0.y + o.y) + ny * (i0.z + o.z));
+                // Each probe: 2 vec4s = position(3)+validity, irradiance(3)+pad
+                int base = idx * 8;
+                vec4 posValid = vec4(uDynamicProbes[base + 0], uDynamicProbes[base + 1],
+                                     uDynamicProbes[base + 2], uDynamicProbes[base + 3]);
+                vec4 irr = vec4(uDynamicProbes[base + 4], uDynamicProbes[base + 5],
+                                uDynamicProbes[base + 6], uDynamicProbes[base + 7]);
+                if (posValid.w > 0.5) {
+                    irradiance += w * irr.rgb;
+                    wsum += w;
+                }
+            }
+        }
+    }
+    if (wsum <= 0.0) {
+        irradiance = vec3(0.0);
+        return false;
+    }
+    irradiance /= wsum;
+    return true;
 }
 
 // weather uniform added
