@@ -269,6 +269,7 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     // graph then treats it as available to passes that read last frame's colour.
     histImage_ = dev_.createImage({W, H, rhi::Format::RGBA16_FLOAT, true, false, true, true, "TAA history"});
     hHist_ = graph_.import(*histImage_, "TAA history");
+    hSSR_ = graph_.create(dev_, {W, H, rhi::Format::RGBA16_FLOAT, true, false, true, true, "screen-space reflections"});
     hAerialL_ = graph_.create(dev_, {kAerialW, kAerialH, rhi::Format::RGBA16_FLOAT, true, false, true, true, "aerial in-scatter froxels"});
     hAerialT_ = graph_.create(dev_, {kAerialW, kAerialH, rhi::Format::RGBA16_FLOAT, true, false, true, true, "aerial transmittance froxels"});
     hShaft_ = graph_.create(dev_, {std::max(1u, W / 4), std::max(1u, H / 4), rhi::Format::RGBA16_FLOAT, true, false, true, true, "god rays (quarter res)"});
@@ -404,6 +405,7 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     dGtao_ = makeSet(ubo_.get(), bindings({{20, &linDepth}}));
     dAoBlur_ = makeSet(ubo_.get(), bindings({{20, &linDepth}, {21, &aoRaw}}));
     dTaa_ = makeSet(ubo_.get(), bindings({{4, &hdr}, {20, &linDepth}, {22, &hist}}));
+    dSsr_ = makeSet(ubo_.get(), bindings({{4, &hdr}, {20, &linDepth}, {22, &hist}}));
     dCopy_ = makeSet(ubo_.get(), bindings({{4, &resolved}}));
     // FFT ocean: evolve (h0 -> spectrum m) and the two ping-pong sets of the 2-D FFT. The ocean sets expose
     // the three finished spectra to the vertex stage (depth prepass and ocean surface both use oceanVs_).

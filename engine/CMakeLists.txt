@@ -93,6 +93,7 @@ engine_shader(SHADER_SPV ${SHADER_DIR}/dof_blur.frag frag)
 engine_shader(SHADER_SPV ${SHADER_DIR}/dof_composite.frag frag)
 engine_shader(SHADER_SPV ${SHADER_DIR}/exposure_downsample.frag frag)
 engine_shader(SHADER_SPV ${SHADER_DIR}/exposure_reduce.frag frag)
+engine_shader(SHADER_SPV ${SHADER_DIR}/ssr_trace.frag frag)
 add_custom_target(shaders ALL DEPENDS ${SHADER_SPV})
 
 add_library(engine_rhi STATIC

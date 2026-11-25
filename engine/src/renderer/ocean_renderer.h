@@ -102,11 +102,13 @@ private:
     std::unique_ptr<rhi::Shader> depthFs_, gtaoFs_, aoBlurFs_, taaFs_, copyFs_;
     std::unique_ptr<rhi::Pipeline> taaPipe_, copyPipe_;
     std::unique_ptr<rhi::Pipeline> depthMeshPipe_, depthOceanPipe_, gtaoPipe_, aoBlurPipe_;
+    std::unique_ptr<rhi::Pipeline> ssrPipe_;
     std::unique_ptr<rhi::Pipeline> meshPipe_, shadowPipe_;
 
     // Descriptor sets, one per pass (each pass reads a fixed set of images).
     std::unique_ptr<rhi::DescriptorSet> dTrans_, dMs_, dSkyView_, dCloud_, dCloudShadow_, dSky_, dOcean_;
     std::unique_ptr<rhi::DescriptorSet> dBright_, dBlurH_, dBlurV_, dTone_, dMesh_, dMeshRefl_, dShadow_, dShaft_, dPrefilter_, dAerial_, dShadowNear_, dShadowFar_, dDepthPre_, dGtao_, dAoBlur_, dTaa_, dCopy_;
+    std::unique_ptr<rhi::DescriptorSet> dSsr_;
     std::unique_ptr<rhi::DescriptorSet> dDofPrepare_, dDofBlurH_, dDofBlurV_, dDofComposite_, dLumDownsample_, dLumReduce_;
 
     // Scanned materials (wood and rock diffuse, with derived normal and height maps).
@@ -132,6 +134,7 @@ private:
     rg::Handle hPre_ = 0;    // prefiltered sky: three stacked rows of the sky-view LUT
     rg::Handle hAerialL_ = 0, hAerialT_ = 0;  // aerial-perspective froxel atlases (in-scatter, transmittance)
     rg::Handle hResolved_ = 0, hHist_ = 0;  // TAA: resolved colour, history (imported, see histImage_)
+    rg::Handle hSSR_ = 0;  // screen-space reflections
     std::unique_ptr<rhi::Image> histImage_;
     rg::Handle hLinDepth_ = 0, hDepthPre_ = 0, hAO_ = 0, hAOB_ = 0;  // linear depth (prepass), AO (raw, blurred)
     rg::Handle hShadowNear_ = 0, hShadowNearDepth_ = 0, hShadowFar_ = 0, hShadowFarDepth_ = 0;  // cascades

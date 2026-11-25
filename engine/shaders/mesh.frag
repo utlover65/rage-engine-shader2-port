@@ -377,19 +377,6 @@ void evaluateMaterial(out vec3 albedo, out float roughness, out float metallic, 
         albedo *= 1.0 - floodFactor * 0.25;
         // Wet sand/rock gets slightly smoother (lower roughness)
         roughness = mix(roughness, max(0.05, roughness - 0.05 * floodFactor), 0.3);
-        // Sand develops moisture-dependent micro-sparkle when wet
-        if (kind == 7 && wet > 0.01) {
-            float moistureSparkle = smoothstep(0.0, 0.3, wet) * smoothstep(0.0, 0.5, floodFactor);
-            albedo *= 1.0 + vec3(0.02, 0.01, 0.0) * moistureSparkle;  // golden sparkle
-            roughness = mix(roughness, max(0.02, roughness - 0.02 * moistureSparkle), 0.4);
-        }
-        // Rock develops algae/moss growth in damp shaded areas
-        if (kind == 6 && wet > 0.01) {
-            float algae = smoothstep(0.4, 0.8, noise3(p * 3.0)) * smoothstep(0.0, 0.6, floodFactor);
-            vec3 algaeTint = vec3(0.2, 0.35, 0.15) * algae;
-            albedo = mix(albedo, albedo * algaeTint, 0.3);
-            roughness = mix(roughness, roughness + 0.02 * algae, 0.3);
-        }
     }
 
     // Sub-pixel material breakup: real surfaces do not have one perfectly uniform roughness.
@@ -520,9 +507,6 @@ void main() {
     vec3 ambientDiffuse = probed ? probeLight : skyDiffuseIrradiance(n);
     vec3 R = reflect(-V, n);
     vec3 envRadiance = skyGlossy(vec3(R.x, max(R.y, 0.0005), R.z), 0.02 + 0.5 * roughness * roughness);
-    // Only glossy surfaces take screen-space reflections; rough ones keep the sky.
-    vec4 ssr = ssrTrace(vWorld + n * 0.05, R, cam);
-    envRadiance = mix(envRadiance, ssr.rgb, ssr.a * (1.0 - smoothstep(0.35, 0.7, roughness)));
     // A compact multiple-scattering compensation keeps rough conductors/dielectrics from
     // becoming unnaturally dark as the microfacet lobe broadens (approximation to the LUT method).
     float energyLoss = 1.0 - 0.28 * roughness * (1.0 - max(max(F0.r, F0.g), F0.b));
