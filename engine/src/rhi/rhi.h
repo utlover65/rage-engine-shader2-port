@@ -75,6 +75,10 @@ struct PipelineDesc {
     std::vector<VertexAttribute> vertexAttributes;
     uint32_t pushConstantBytes = 0;               // at most 128
     bool cullBack = false;
+    // Optional second colour attachment (used by the mesh pass to write the accumulated SSR
+    // history alongside the final HDR colour target).
+    bool hasColor2 = false;
+    Format colorFormat2 = Format::RGBA16_FLOAT;
 };
 
 struct ComputePipelineDesc {
@@ -138,7 +142,7 @@ public:
     // Moves an image to the state a later command needs.
     virtual void transition(Image& image, ImageState to) = 0;
 
-    // Opens a rendering scope on the targets. Viewport and scissor cover the colour target.
+// Opens a rendering scope on the targets. Viewport and scissor cover the colour target.
     // depth may be null. Targets must already be in ColorTarget / DepthTarget states.
     virtual void beginRendering(Image& color, LoadOp colorLoad, const std::array<float, 4>& clearColor,
                                 Image* depth) = 0;

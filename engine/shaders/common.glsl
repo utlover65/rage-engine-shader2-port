@@ -24,10 +24,9 @@ layout(std140, set = 0, binding = 0) uniform FrameData {
     vec4 uTaa;             // z = 1 when the TAA history holds a previous frame
     vec4 uDof;             // adaptive depth-of-field: x = focal length (mm), y = f-number,
                            // z = focus distance (m), w = sensor height (mm)
-    vec4 uWeather;         // weather/wetness: x = rain intensity (0..1), y = wetness factor (0..1),
+vec4 uWeather;         // weather/wetness: x = rain intensity (0..1), y = wetness factor (0..1),
                            // z = flood level (metres above shore), w = foam intensity (0..1)
-    float uDynamicProbes[64 * 8];  // DDGI: 64 probes x 2 vec4s (position+validity, irradiance+pad)
-} uF;
+    vec4 uWind;            // wind: xyz = direction, w = speed
 
 // Textures in the fixed descriptor layout (see rhi.h). Each pass reads only what it declares.
 layout(set = 0, binding = 1) uniform sampler2D uTransmittanceLut;  // T(height, cos zenith)
@@ -51,8 +50,10 @@ layout(set = 0, binding = 18) uniform sampler2D uShadowNear;      // near sun ca
 layout(set = 0, binding = 19) uniform sampler2D uShadowFar;       // far sun cascade
 layout(set = 0, binding = 20) uniform sampler2D uLinDepth;        // linear depth from the prepass (metres)
 layout(set = 0, binding = 21) uniform sampler2D uAO;              // ambient occlusion (see gtao.frag, ao_blur.frag)
-layout(set = 0, binding = 22) uniform sampler2D uHistory;        // TAA history: last frame's resolved HDR
+    layout(set = 0, binding = 22) uniform sampler2D uHistory;        // TAA history: last frame's resolved HDR
     layout(set = 0, binding = 23) uniform sampler2D uSsid;            // Screen-space indirect diffuse: sampled from uHistory for SSID
+    layout(set = 0, binding = 24) uniform sampler2D uSsrHistory;      // SSR temporal accumulation history (rgb) + confidence (a)
+
 
 // Per-pass constant: the size (w, h) of the target being rendered, in pixels.
 layout(push_constant) uniform PassPush {

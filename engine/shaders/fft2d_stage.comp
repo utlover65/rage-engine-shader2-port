@@ -3,8 +3,8 @@
 // mode 1 transforms columns (z), stride N. Dispatch (N / 2 / 32, N, 1). The 2-D FFT is 6 row passes then
 // 6 column passes for N = 64.
 layout(local_size_x = 32) in;
-layout(std430, set = 0, binding = 23) readonly buffer Src { vec2 src[]; };
-layout(std430, set = 0, binding = 24) writeonly buffer Dst { vec2 dst[]; };
+layout(std430, set = 0, binding = 25) readonly buffer Src { vec2 src[]; };
+layout(std430, set = 0, binding = 26) writeonly buffer Dst { vec2 dst[]; };
 layout(push_constant) uniform Push { uint Ns; uint N; uint mode; } pc;
 
 vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }

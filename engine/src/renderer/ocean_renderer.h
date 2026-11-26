@@ -122,6 +122,7 @@ private:
     uint32_t terrVertexCount_ = 0;
     scene::ProbeSet probes_;               // baked ambient cubes: 64 probes x 6 faces x vec4
     float dynamicProbes_[64 * 8] = {};     // DDGI: 64 probes x 2 vec4s (position+validity, irradiance+pad)
+    std::unique_ptr<rhi::Buffer> windData_;  // wind deformation data for vegetation
 
     rg::Graph graph_;
     rg::Handle hTrans_ = 0, hMs_ = 0, hSky_ = 0, hCloud_ = 0, hCloudShadow_ = 0;
@@ -138,6 +139,9 @@ private:
     rg::Handle hLinDepth_ = 0, hDepthPre_ = 0, hAO_ = 0, hAOB_ = 0;  // linear depth (prepass), AO (raw, blurred)
     rg::Handle hShadowNear_ = 0, hShadowNearDepth_ = 0, hShadowFar_ = 0, hShadowFarDepth_ = 0;  // cascades
     rg::Handle hRefl_ = 0, hReflDepth_ = 0;  // planar reflection, half resolution
+    rg::Handle hSsrB_ = 0;                   // SSR temporal accumulation history (sampled; ping-pong partner)
+    rg::Handle hSsrA_ = 0;                   // SSR temporal accumulation history (written by the mesh pass)
+    // rg::Handle hWindData_ = 0;               // wind data buffer for vegetation deformation (removed: use windData_ Buffer instead)
 
     // FFT ocean. A compute pass before the depth prepass evolves the spectrum and runs the 2-D FFT for the
     // height and the two horizontal displacements; the ocean vertex stage reads them as storage slots 0..2.

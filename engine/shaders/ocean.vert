@@ -10,10 +10,10 @@ layout(location = 1) out vec3 vNormal;
 layout(location = 2) out float vJacDet;
 
 // FFT fields (real parts): height and the horizontal choppy displacement along x and z, in metres.
-// Storage slots 0..2 of the descriptor set (kMaxStorageBuffers), bindings 23..25.
-layout(std430, set = 0, binding = 23) readonly buffer OceanHeight { vec2 oceanH[]; };
-layout(std430, set = 0, binding = 24) readonly buffer OceanDispX { vec2 oceanDx[]; };
-layout(std430, set = 0, binding = 25) readonly buffer OceanDispZ { vec2 oceanDz[]; };
+// Storage slots 0..2 of the descriptor set (kMaxStorageBuffers), bindings 25..27.
+layout(std430, set = 0, binding = 25) readonly buffer OceanHeight { vec2 oceanH[]; };
+layout(std430, set = 0, binding = 26) readonly buffer OceanDispX { vec2 oceanDx[]; };
+layout(std430, set = 0, binding = 27) readonly buffer OceanDispZ { vec2 oceanDz[]; };
 const int OCEAN_N = 256;       // grid points per side; equals kOceanN
 const float OCEAN_L = 1024.0;  // patch period (m); equals kOceanL
 

@@ -7,6 +7,9 @@ layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec3 vAlbedo;
 layout(location = 3) flat in float vMaterial;
 layout(location = 0) out vec4 outHdr;
+// Second colour attachment of the mesh pipeline: the temporally accumulated SSR radiance (rgb) and
+// its temporal confidence (a). Written alongside outHdr.
+layout(location = 1) out vec4 ssrAccumOut;
 
 const float DIELECTRIC_F0 = 0.04;
 const float WOOD_TILE = 1.6;   // metres per repeat of the wood scan
@@ -522,10 +525,30 @@ void main() {
     }
     vec3 R = reflect(-V, n);
     vec3 envRadiance = skyGlossy(vec3(R.x, max(R.y, 0.0005), R.z), 0.02 + 0.5 * roughness * roughness);
-    // Screen-space reflection: trace the reflected ray through the linear depth buffer and blend
-    // the hit colour with the sky radiance; the blend fades in only for glossy surfaces (roughness < 0.35).
-    vec4 ssr = ssrTrace(vWorld + n * 0.05, R, cam);
+    // Subsurface light transmission for vegetation: simulate light passing through leaves.
+    // This is a simple approximation: trace a few rays through the foliage and accumulate
+    // the transmitted radiance, fading with depth and absorbing some light.
+    vec3 subsurface = vec3(0.0);
+    if (roughness > 0.1 && kind != 5 && kind != 12) {  // apply to most materials except glazing
+        vec3 rayDir = normalize(V);
+        for (int i = 0; i < 3; i++) {
+            float rayLength = 0.5 + 0.5 * roughness;  // deeper penetration for rougher surfaces
+            vec3 samplePos = vWorld + rayDir * (i * 0.33 + 0.1);
+            // Sample the albedo at the sample position (triplanar for procedural geometry)
+            vec3 sampleAlbedo = triAlbedo(uWoodAlbedo, samplePos, triWeights(n), 1.0 / WOOD_TILE);
+            // Accumulate transmitted light, fading with distance
+            float fade = exp(-sampleAlbedo.r * rayLength * 0.1);
+            subsurface += sampleAlbedo * fade;
+        }
+        subsurface = subsurface / 3.0;
+    }
     envRadiance = mix(envRadiance, ssr.rgb, ssr.a * (1.0 - smoothstep(0.35, 0.7, roughness)));
+    // Temporal accumulation of the SSR estimate: blend the previous frame's hit radiance with the
+    // current one using the ray-march coverage as the temporal confidence, then store the result.
+    vec4 prevSsr = uSsrHistory;
+    float ssrConf = ssr.a;
+    vec4 accum = prevSsr * (1.0 - ssrConf) + ssr * ssrConf;
+    envRadiance = mix(envRadiance, accum.rgb, accum.a * (1.0 - smoothstep(0.35, 0.7, roughness)));
     // A compact multiple-scattering compensation keeps rough conductors/dielectrics from
     // becoming unnaturally dark as the microfacet lobe broadens (approximation to the LUT method).
     float energyLoss = 1.0 - 0.28 * roughness * (1.0 - max(max(F0.r, F0.g), F0.b));
@@ -562,4 +585,5 @@ void main() {
         radiance += indirectDiffuse * 0.15;
     }
     outHdr = vec4(radiance * Tv + Lin, 1.0);
+    ssrAccumOut = accum;
 }

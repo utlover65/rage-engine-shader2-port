@@ -42,7 +42,7 @@ struct alignas(16) OceanRenderer::FrameData {
     float taa[4];
     float dof[4];  // focal length (mm), f-number, focus distance (m), sensor height (mm)
     float uWeather[4];  // weather: x=rain, y=wetness, z=flood, w=foam
-    float dynamicProbes[64 * 8];  // DDGI: 64 probes x 2 vec4s (position+validity, irradiance+pad)
+    float uWind[4];     // wind: xyz=direction, w=speed
 };
 
 namespace {
@@ -229,6 +229,8 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
         d.vertex = meshVs_.get();
         d.fragment = meshFs_.get();
         d.colorFormat = rhi::Format::RGBA16_FLOAT;
+        d.hasColor2 = true;
+        d.colorFormat2 = rhi::Format::RGBA16_FLOAT;
         d.hasDepth = true;
         d.depthTest = true;
         d.depthWrite = true;
@@ -283,6 +285,12 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     hShadowDepth_ = graph_.create(dev_, {settings.shadowMapSize, settings.shadowMapSize, rhi::Format::D32_FLOAT, false, true, false, false, "shadow depth"});
     hRefl_ = graph_.create(dev_, {halfW, halfH, rhi::Format::RGBA16_FLOAT, true, false, true, true, "planar reflection (half res)"});
     hReflDepth_ = graph_.create(dev_, {halfW, halfH, rhi::Format::D32_FLOAT, false, true, false, false, "planar reflection depth"});
+    // SSR temporal accumulation history: read (sampled) and written (colour target) by the mesh pass.
+    // Ping-pong: the mesh pass reads hSsrB_ and writes hSsrA_, alternating implicitly per frame.
+    hSsrB_ = graph_.create(dev_, {W, H, rhi::Format::RGBA16_FLOAT, true, false, true, true, "SSR history (read)"});
+    hSsrA_ = graph_.create(dev_, {W, H, rhi::Format::RGBA16_FLOAT, true, false, true, true, "SSR history (write)"});
+    // Wind data buffer for vegetation deformation (std430 layout, binding 28 in set 0).
+    windData_ = dev_.createBuffer(sizeof(float) * 4, rhi::BufferUsage::Storage);
     hBloomA_ = graph_.create(dev_, {halfW, halfH, rhi::Format::RGBA16_FLOAT, true, false, true, true, "bloom A (half res)"});
     hBloomB_ = graph_.create(dev_, {halfW, halfH, rhi::Format::RGBA16_FLOAT, true, false, true, true, "bloom B (half res)"});
     hLdr_ = graph_.create(dev_, {W, H, rhi::Format::RGBA8_UNORM, true, false, false, true, "display"});
@@ -379,6 +387,7 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     rhi::Image& aoBlur = graph_.image(hAOB_);
     rhi::Image& resolved = graph_.image(hResolved_);
     rhi::Image& hist = graph_.image(hHist_);
+    rhi::Image& ssrHist = graph_.image(hSsrB_);
     rhi::Image& aerialT = graph_.image(hAerialT_);
     rhi::Image& dofPrep = graph_.image(hDofPrep_);
     rhi::Image& dofH = graph_.image(hDofH_);
@@ -387,8 +396,8 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
     rhi::Image& lumA = graph_.image(hLumA_);
     // Scene objects, as drawn in the main view and in the mirrored reflection view.
     const TexSet meshTex = bindings({{1, &trans}, {2, &sky}, {3, &cloud}, {5, &ms}, {7, &shadow},
-                                     {9, &cloudShadow}, {8, woodAlbedo_.get()}, {10, woodNormal_.get()},
-                                     {11, rockAlbedo_.get()}, {12, rockNormal_.get()}, {15, &pre}, {16, &aerialL}, {17, &aerialT}, {18, &shadowNear}, {19, &shadowFar}, {20, &linDepth}, {21, &aoBlur}, {22, &hist}, {23, &hist}});
+                                      {9, &cloudShadow}, {8, woodAlbedo_.get()}, {10, woodNormal_.get()},
+                                      {11, rockAlbedo_.get()}, {12, rockNormal_.get()}, {15, &pre}, {16, &aerialL}, {17, &aerialT}, {18, &shadowNear}, {19, &shadowFar}, {20, &linDepth}, {21, &aoBlur}, {22, &hist}, {23, &hist}, {24, &ssrHist}, {25, &oceanHeight}, {26, &oceanDispX}, {27, &oceanDispZ}, {28, &windData}});
     dTrans_ = makeSet(ubo_.get(), bindings({}));
     dMs_ = makeSet(ubo_.get(), bindings({{1, &trans}}));
     dSkyView_ = makeSet(ubo_.get(), bindings({{1, &trans}, {5, &ms}}));
@@ -603,7 +612,9 @@ OceanRenderer::OceanRenderer(rhi::Device& device, const std::string& shaderDir, 
         .read(hAOB_)
         .read(hLinDepth_)
         .read(hHist_)
+        .read(hSsrA_)
         .colorTarget(hHdr_, rhi::LoadOp::Load)
+        .colorTarget(hSsrB_, rhi::LoadOp::Clear)
         .depthTarget(hDepth_)
         .execute([this](rhi::CommandList& c) {
             c.bindPipeline(*oceanPipe_);
@@ -814,6 +825,11 @@ void OceanRenderer::renderFrame(double timeSeconds) {
     fd.uWeather[1] = 0.0f;  // wetness factor
     fd.uWeather[2] = 0.0f;  // flood level
     fd.uWeather[3] = 0.0f;  // foam intensity
+    // Wind: direction and speed for vegetation deformation
+    fd.uWind[0] = 0.0f;  // wind direction x
+    fd.uWind[1] = 1.0f;  // wind direction y
+    fd.uWind[2] = 0.0f;  // wind direction z
+    fd.uWind[3] = 0.5f;  // wind speed
     // Probe grid (dims 0 before the bake, which makes the shaders fall back to the sky).
     for (int i = 0; i < 3; i++) {
         fd.probeOrigin[i] = probes_.origin[i];
@@ -826,13 +842,15 @@ void OceanRenderer::renderFrame(double timeSeconds) {
     // sun matrix, so their vertex stage stays unchanged.
     const math::Mat4 sunNearVP = math::orthoVulkan(-40.0, 40.0, -40.0, 40.0, 0.1, 1200.0) * sunView;
     const math::Mat4 sunFarVP = math::orthoVulkan(-500.0, 500.0, -500.0, 500.0, 0.1, 1200.0) * sunView;
-    storeMat(fd.sunNearViewProj, sunNearVP);
+storeMat(fd.sunNearViewProj, sunNearVP);
     storeMat(fd.sunFarViewProj, sunFarVP);
     // DDGI: refresh dynamic probe irradiance each frame so GI responds to time-of-day/weather.
     updateDynamicProbes();
-    std::memcpy(fd.dynamicProbes, dynamicProbes_, sizeof(fd.dynamicProbes));
     std::memcpy(ubo_->data(), &fd, sizeof(fd));
-    FrameData fdNear = fd;
+// Update wind data buffer each frame
+float windData[4] = {fd.uWind[0], fd.uWind[1], fd.uWind[2], fd.uWind[3]};
+dev_.setStorageBuffer(*dMesh_, *windData_, 28);
+std::memcpy(windData_->data(), windData, sizeof(windData));
     storeMat(fdNear.sunViewProj, sunNearVP);
     std::memcpy(uboShadowNear_->data(), &fdNear, sizeof(fdNear));
     FrameData fdFar = fd;
@@ -931,7 +949,7 @@ void OceanRenderer::updateDynamicProbes() {
                         const double Tsun = std::max(0.1, 1.0 - 0.5 * std::max(0.0, -muSun));
                         irradiance = irradiance + sunUnit_ * static_cast<double>(Tsun) * cosT * 0.15;
                     }
-                    irradiance = irradiance * 0.5 + static_cast<double>(sunLux_) * 0.0005 * std::max(0.0, static_cast<double>(sunUnit_.y));
+                    irradiance = irradiance * 0.5 + sunUnit_ * (static_cast<double>(sunLux_.y) * 0.0005 * std::max(0.0, static_cast<double>(sunUnit_.y)));
                 }
 
                 dynamicProbes_[index * 8 + 0] = static_cast<float>(pos.x);

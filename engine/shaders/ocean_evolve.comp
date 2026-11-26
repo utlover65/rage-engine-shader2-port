@@ -3,8 +3,8 @@
 // forward FFT of the grid, followed by taking the real part, gives sum_k v e^{i k.x} (the inverse transform).
 // mode 0: height v = h(k,t). mode 1: v = -i (kx/|k|) h. mode 2: v = -i (kz/|k|) h.
 layout(local_size_x = 8, local_size_y = 8) in;
-layout(std430, set = 0, binding = 23) readonly buffer H0 { vec2 h0[]; };
-layout(std430, set = 0, binding = 24) writeonly buffer Out { vec2 spec[]; };
+layout(std430, set = 0, binding = 25) readonly buffer H0 { vec2 h0[]; };
+layout(std430, set = 0, binding = 26) writeonly buffer Out { vec2 spec[]; };
 layout(push_constant) uniform P { float t; float L; float g; uint N; uint mode; } pc;
 
 vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }

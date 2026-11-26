@@ -38,7 +38,7 @@ vec3 deepWaterRadiance(vec3 Wd, vec3 sunW, vec3 Eperp) {
 
 // Capillary cascade: a 96 m FFT patch of waves from 0.75 m up to the main grid's band (see ocean_spectrum.h). Its
 // height is a periodic bilinear sample, as in ocean.vert, and its slopes are central differences of that height.
-layout(std430, set = 0, binding = 26) readonly buffer OceanCapillary { vec2 oceanCap[]; };
+layout(std430, set = 0, binding = 28) readonly buffer OceanCapillary { vec2 oceanCap[]; };
 const int CAP_N = 256;
 const float CAP_L = 96.0;  // patch period (m); equals kOceanCapL
 

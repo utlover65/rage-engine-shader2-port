@@ -510,7 +510,7 @@ PipelineImpl::PipelineImpl(Context& c, const ComputePipelineDesc& desc)
              "vkCreateComputePipelines");
 }
 
-PipelineImpl::PipelineImpl(Context& c, const PipelineDesc& desc) : ctx(c), pushBytes(desc.pushConstantBytes) {
+PipelineImpl::PipelineImpl(Context& c, const PipelineDesc& desc) : ctx(c), pushBytes(desc.pushConstantBytes), hasColor2(desc.hasColor2), colorFormat2(desc.colorFormat2) {
     if (!desc.vertex || !desc.fragment) throw Error("pipeline '" + desc.name + "' needs both shader stages");
     if (desc.pushConstantBytes > 128) throw Error("push constants above the 128-byte minimum");
     const auto* vs = static_cast<const ShaderImpl*>(desc.vertex);
@@ -581,10 +581,11 @@ PipelineImpl::PipelineImpl(Context& c, const PipelineDesc& desc) : ctx(c), pushB
     VkPipelineColorBlendAttachmentState cba{};
     cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
                          VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendAttachmentState cbas[2]{cba, cba};
     VkPipelineColorBlendStateCreateInfo cbs{};
     cbs.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    cbs.attachmentCount = 1;
-    cbs.pAttachments = &cba;
+    cbs.attachmentCount = desc.hasColor2 ? 2 : 1;
+    cbs.pAttachments = desc.hasColor2 ? cbas : &cba;
 
     const VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dsi{};
@@ -593,11 +594,11 @@ PipelineImpl::PipelineImpl(Context& c, const PipelineDesc& desc) : ctx(c), pushB
     dsi.pDynamicStates = dyn;
 
     // Dynamic rendering: the attachment formats are declared here instead of a render pass.
-    VkFormat colorFmt = toVkFormat(desc.colorFormat);
+    VkFormat colorFmts[2]{toVkFormat(desc.colorFormat), toVkFormat(desc.colorFormat2)};
     VkPipelineRenderingCreateInfo prci{};
     prci.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    prci.colorAttachmentCount = 1;
-    prci.pColorAttachmentFormats = &colorFmt;
+    prci.colorAttachmentCount = desc.hasColor2 ? 2 : 1;
+    prci.pColorAttachmentFormats = colorFmts;
     prci.depthAttachmentFormat = desc.hasDepth ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_UNDEFINED;
 
     VkGraphicsPipelineCreateInfo gpci{};

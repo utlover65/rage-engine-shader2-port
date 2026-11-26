@@ -108,6 +108,8 @@ public:
     VkPipeline pipeline = VK_NULL_HANDLE;
     uint32_t pushBytes = 0;
     bool compute = false;
+    bool hasColor2 = false;
+    Format colorFormat2 = Format::RGBA16_FLOAT;
 };
 
 class DescriptorSetImpl final : public DescriptorSet {

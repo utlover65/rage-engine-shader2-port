@@ -109,7 +109,7 @@ void Graph::execute(rhi::CommandList& cmd) {
         const uint32_t first = 2 * index++;
         if (profile_) cmd.writeTimestamp(first);
         if (!(pass->runOnce && pass->ran)) {
-            // Move every input and output into the state this pass needs.
+// Move every input and output into the state this pass needs.
             const detail::Access* colour = nullptr;
             const detail::Access* depth = nullptr;
             for (const auto& a : pass->accesses) {
